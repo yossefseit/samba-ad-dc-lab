@@ -1,20 +1,21 @@
-# Copy to scripts/00-env and edit values.
-# DO NOT commit scripts/00-env if it contains passwords.
+# Copy to scripts/00-env and edit values. This file must never contain secrets.
+# The parser accepts only the documented KEY=VALUE assignments; it does not execute shell code.
 
-DC_IP="10.0.0.252"
-DC_FQDN="dc1.test.local"
+DC_IP="10.20.30.10"
+DC_FQDN="dc1.ad.example.test"
 DC_HOST="dc1"
 
-REALM="TEST.LOCAL"
-DOMAIN="TEST"     # NetBIOS
+REALM="AD.EXAMPLE.TEST"
+DOMAIN="LAB"
 DNS_FORWARDER="9.9.9.9"
+LAN_CIDR="10.20.30.0/24"
 
-# Optional objects
-OU_USERS="OU=Users,DC=test,DC=local"
-OU_WORKSTATIONS="OU=Workstations,DC=test,DC=local"
+# Optional sample directory objects created by 60-create-objects.sh.
+OU_USERS_NAME="Lab Users"
+OU_WORKSTATIONS_NAME="Lab Workstations"
+NEW_USER="lab.user"
+NEW_USER_GIVEN="Lab"
+NEW_USER_SURNAME="User"
 
-NEW_USER="joe"
-NEW_USER_GIVEN="Yossef"
-NEW_USER_SURNAME="Ali"
-# Leave blank to be prompted interactively
-NEW_USER_PASSWORD=""
+# Online domain backups contain secrets. Keep this path outside the repository.
+BACKUP_DIR="/var/backups/samba-ad-dc"

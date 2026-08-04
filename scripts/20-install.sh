@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[+] Updating apt"
-apt update
+# shellcheck source=scripts/lib/common.sh
+source "$(dirname -- "$0")/lib/common.sh"
 
-echo "[+] Installing packages"
-apt install -y samba samba-ad-dc winbind krb5-user smbclient dnsutils chrony
+require_root
+require_ubuntu_2404
+require_command apt-get systemctl
 
-echo "[+] Disabling standalone services (must not run on AD DC)"
+log "Updating Ubuntu package indexes"
+apt-get update
+
+log "Installing the AD DC, DNS, Kerberos, SMB test, and time packages"
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  samba-ad-dc \
+  krb5-user \
+  bind9-dnsutils \
+  smbclient \
+  chrony
+
+log "Stopping and masking standalone Samba services"
 systemctl disable --now smbd nmbd winbind 2>/dev/null || true
-pkill smbd nmbd winbindd 2>/dev/null || true
-rm -f /run/samba/*.pid || true
+systemctl mask smbd nmbd winbind
 
-echo "[+] Disabling systemd-resolved (common lab setup for Samba internal DNS)"
-systemctl disable --now systemd-resolved || true
-rm -f /etc/resolv.conf || true
+log "Enabling the AD DC unit without starting it before provisioning"
+systemctl unmask samba-ad-dc
+systemctl enable samba-ad-dc
 
-echo "[+] Temporary resolv.conf (public DNS) for package installs"
-cat >/etc/resolv.conf <<'EOF'
-nameserver 1.1.1.1
-nameserver 8.8.8.8
-EOF
-
-echo "[+] Done."
+log "Package installation complete; the current DNS resolver was left intact"

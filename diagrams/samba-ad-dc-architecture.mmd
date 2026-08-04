@@ -1,0 +1,26 @@
+flowchart LR
+    accTitle: Samba Active Directory domain controller lab architecture
+    accDescr: An administrator and Windows client use an isolated Ubuntu Samba domain controller. The controller provides DNS, Kerberos, LDAP, SYSVOL, NETLOGON, and signed time, forwards non-domain queries to an upstream resolver, synchronizes with external time sources, writes a root-only local online backup, and relies on an operator to move that backup to encrypted offline storage.
+
+    Admin[Administrator<br/>SSH or Windows RSAT]
+    Client[Windows lab client]
+    DNS[Upstream DNS resolver]
+    NTP[External time sources]
+    LocalBackup[(Root-only local<br/>online backup)]
+    OfflineBackup[(Operator-managed encrypted<br/>offline copy)]
+
+    subgraph LAN[Isolated lab LAN]
+        DC[Ubuntu 24.04<br/>Samba AD DC]
+        Services[Internal DNS · Kerberos<br/>LDAP · SYSVOL/NETLOGON]
+        Chrony[Chrony + Samba<br/>signed-time socket]
+        DC --- Services
+        DC --- Chrony
+    end
+
+    Admin -->|SSH / authenticated administration| DC
+    Client -->|DNS, Kerberos, LDAP, SMB| DC
+    Chrony -->|signed NTP, LAN only| Client
+    DC -->|forward non-AD queries| DNS
+    Chrony -->|synchronize host clock| NTP
+    DC -.->|archive + checksum| LocalBackup
+    LocalBackup -.->|operator copies and encrypts| OfflineBackup

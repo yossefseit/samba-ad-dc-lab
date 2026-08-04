@@ -1,84 +1,93 @@
-# DNS and Kerberos Configuration
+# DNS, Kerberos, and signed time
 
-After provisioning the domain controller, you need to ensure that DNS and Kerberos are correctly configured.  Samba’s internal DNS is responsible for registering service (SRV) records used by clients to locate LDAP and Kerberos services.  Kerberos must reference the correct realm and key distribution centre (KDC).
+Active Directory clients discover LDAP, Kerberos, password-change, and domain-controller services through DNS SRV records. Kerberos also depends on closely synchronized clocks. These are foundational dependencies, not optional polish.
 
-## 1. Verify DNS service
-
-First, confirm that Samba’s DNS server is listening on port 53:
+## Activate Samba internal DNS
 
 ```bash
-sudo ss -lpun | grep ':53'
+sudo bash scripts/40-dns-forwarder.sh
 ```
 
-You should see `samba` bound to both `0.0.0.0:53` and `:::53`.  If nothing is listening, check that `samba-ad-dc` is running.
+The script:
 
-### Test LDAP SRV record
+1. Confirms that the existing AD database matches the reviewed realm and NetBIOS domain.
+2. Replaces duplicate `dns forwarder` entries with one validated unicast IPv4 target under `[global]`.
+3. validates the candidate configuration with `testparm` before replacing `smb.conf`;
+4. records whether `systemd-resolved` was enabled and active;
+5. disables the stub resolver, writes a static resolver that uses Samba at `127.0.0.1`, and starts `samba-ad-dc`;
+6. gives Samba DNS up to 30 seconds to become ready, then requires the service and DC A-record lookup to succeed;
+7. restores the pre-run Samba configuration, resolver, and service state if activation fails.
 
-Use `host` to query the `_ldap._tcp` service record for your domain (replace `test.local` with your DNS domain):
+The resulting dedicated-DC resolver is:
+
+```text
+nameserver 127.0.0.1
+search ad.example.test
+```
+
+Do not add a public resolver as a second `nameserver`. Domain queries sent to a server that does not host the AD zone fail unpredictably rather than falling back cleanly. Samba forwards non-AD queries through `DNS_FORWARDER`.
+
+Domain-joined clients must use the DC's **LAN address** as DNS, not `127.0.0.1` and not a public resolver. DHCP configuration is outside this repository.
+
+## Verify service-discovery records
 
 ```bash
-host -t SRV _ldap._tcp.test.local 127.0.0.1
+zone=ad.example.test
+host -t A dc1.ad.example.test 127.0.0.1
+host -t SRV "_ldap._tcp.${zone}" 127.0.0.1
+host -t SRV "_kerberos._tcp.${zone}" 127.0.0.1
+host -t SRV "_kerberos._udp.${zone}" 127.0.0.1
+host -t SRV "_kpasswd._udp.${zone}" 127.0.0.1
+host -t A example.com 127.0.0.1
 ```
 
-The result should point to your domain controller, for example:
+The SRV responses must name the configured DC and return ports 389, 88, 88, and 464 respectively. If records are absent, use `sudo samba_dnsupdate --verbose` for diagnosis; do not fabricate DNS records until the cause is understood.
 
-```
-_ldap._tcp.test.local has SRV record 0 100 389 dc1.test.local.
-```
+Samba does not create a reverse zone automatically. Add the subnet-specific reverse zone and DC PTR record only after confirming ownership and prefix boundaries, following the official [Samba DNS administration guidance](https://wiki.samba.org/index.php/DNS_Administration). Reverse-zone automation is intentionally out of scope because the repository cannot safely infer the network's delegation model.
 
-### Test Kerberos SRV records
+## Kerberos authentication
 
-Kerberos clients locate the KDC using `_kerberos._udp` and `_kerberos._tcp` records.  Query them similarly:
+Obtain a ticket as a normal interactive user, not through an automation secret:
 
 ```bash
-host -t SRV _kerberos._udp.test.local 127.0.0.1
-host -t SRV _kerberos._tcp.test.local 127.0.0.1
-```
-
-If the SRV records are missing or point to the wrong host, run the DNS update tool:
-
-```bash
-sudo samba_dnsupdate --verbose
-sudo systemctl restart samba-ad-dc
-```
-
-This command registers service records in the Samba DNS zone.
-
-## 2. Kerberos authentication
-
-Once DNS is working and `/etc/krb5.conf` has been replaced by Samba’s version, test Kerberos authentication using the domain administrator account.  Never prepend `sudo` when obtaining Kerberos tickets:
-
-```bash
-kinit Administrator@TEST.LOCAL
+kinit Administrator@AD.EXAMPLE.TEST
 klist
 ```
 
-`kinit` will prompt for the administrator password and, upon success, `klist` will display your Kerberos ticket and validity period.  If you see “client not found in Kerberos database” or “Cannot find KDC”, double‑check your realm name, DNS SRV records and system clock.
-
-## 3. Managing resolv.conf
-
-During provisioning and initial package installation you may temporarily use public resolvers (e.g. `1.1.1.1` or `8.8.8.8`) in `/etc/resolv.conf` to ensure `apt update` works.  After the AD DC is running, revert `/etc/resolv.conf` to local DNS and set a search domain.  Example contents:
-
-```conf
-nameserver 127.0.0.1
-search test.local
-```
-
-Combine this with a `dns forwarder` in `smb.conf` so that external names resolve via your upstream resolver.
-
-## 4. Adjusting the DNS forwarder
-
-To change the upstream DNS server, edit `/etc/samba/smb.conf` and ensure there is only one `dns forwarder` line.  For example, to forward to Quad9 (9.9.9.9):
-
-```ini
-[global]
-    dns forwarder = 9.9.9.9
-```
-
-Remove any accidental duplicate entries (e.g. `dns forwarder = 127.0.0.1`).  Restart `samba-ad-dc` after editing:
+Destroy the ticket cache after testing:
 
 ```bash
-sudo systemctl restart samba-ad-dc
+kdestroy
 ```
 
-These steps guarantee that DNS and Kerberos operate correctly for both domain clients and the host itself.
+Common causes of `Cannot find KDC`, `Clock skew too great`, and client-not-found errors are wrong DNS, a mismatched realm, an unreadable `/etc/krb5.conf`, and unsynchronized time.
+
+## Configure signed domain time
+
+Windows domain members normally use the AD time hierarchy. Samba provides Microsoft signed NTP responses through its `ntp_signd` socket; Chrony serves them only to explicitly allowed clients.
+
+```bash
+sudo bash scripts/45-time-sync.sh
+```
+
+The script creates `/etc/chrony/conf.d/samba-ad-dc-lab.conf` with:
+
+```text
+allow 10.20.30.0/24
+ntpsigndsocket /var/lib/samba/ntp_signd
+```
+
+It also restricts the socket directory to `root:_chrony`, validates the expanded Chrony configuration, starts the service, and displays tracking data. `LAN_CIDR` must be the narrowest subnet containing lab clients. Apply the same restriction to UDP/123 in the host and network firewalls.
+
+Signed-time requests are not themselves authenticated before a signed response is returned, so exposing the service broadly increases password-cracking risk. Never use `allow all` for this lab.
+
+Verify:
+
+```bash
+chronyc tracking
+chronyc sources -v
+sudo ss -lunp | grep ':123'
+sudo stat /var/lib/samba/ntp_signd/socket
+```
+
+Move next to [Verification and evidence](04-verify.md).

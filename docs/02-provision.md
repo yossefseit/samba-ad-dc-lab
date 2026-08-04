@@ -1,81 +1,77 @@
-# Domain Provisioning
+# Provision the first domain controller
 
-With the server prepared and required packages installed, you can create a new Active Directory domain.  This step initialises Samba’s internal database, generates Kerberos keytabs and DNS zone files, and writes a new smb.conf.
+Provisioning creates a **new AD forest** and its first domain controller. It is not how an additional DC is added to an existing domain; additional DCs must join the domain instead.
 
-## 1. Back up any existing configuration
+## Irreversible choices
 
-If `/etc/samba/smb.conf` exists (for example, from a previous file‑server setup), back it up before provisioning:
+Confirm these values in `scripts/00-env` before continuing:
+
+- `REALM`: uppercase AD DNS name and Kerberos realm;
+- `DOMAIN`: NetBIOS domain, one word and at most 15 characters;
+- `DC_HOST`: short host name, distinct from `DOMAIN`;
+- `DC_FQDN`: host plus the lowercase realm suffix;
+- `DC_IP`: persistent LAN address already assigned to the VM.
+
+Samba does not support casually renaming an established AD DNS zone and Kerberos realm. If a disposable lab was provisioned with the wrong identity, destroy and rebuild the isolated VM rather than editing databases in place.
+
+## Secret handling
+
+The Administrator password is entered only in Samba's interactive provisioning prompt. It is not accepted through `scripts/00-env`, placed in process arguments, written to shell history, or committed as an example. Store it in an appropriate password manager.
+
+## Run provisioning
 
 ```bash
-sudo mv /etc/samba/smb.conf "/etc/samba/smb.conf.bak.$(date +%F_%H%M%S)"
+sudo bash scripts/30-provision.sh
 ```
 
-## 2. Provision the domain
+The script passes the reviewed realm, domain, role, DNS backend, and host IP into interactive mode. Confirm the displayed defaults and enter a unique lab Administrator password twice.
 
-Run `samba‑tool domain provision` as root.  The example below uses variables defined in `scripts/00-env` and enables RFC 2307 attributes for UNIX ID mapping.
+Under the hood, the material operation is equivalent to:
 
 ```bash
 sudo samba-tool domain provision \
+  --interactive \
   --use-rfc2307 \
-  --realm="${REALM}" \
-  --domain="${DOMAIN}" \
+  --realm=AD.EXAMPLE.TEST \
+  --domain=LAB \
   --server-role=dc \
-  --dns-backend=SAMBA_INTERNAL
+  --dns-backend=SAMBA_INTERNAL \
+  --host-ip=10.20.30.10
 ```
 
-During provisioning you will be prompted for the **Administrator** password.  Choose a strong password; it will also be used as the default domain admin account.  Samba may display a randomly generated password if you leave the prompt blank.
+The script also copies Samba's generated Kerberos configuration to `/etc/krb5.conf`, as required on a dedicated DC. If other Kerberos realms share the host, stop: replacing that file is not a safe design for the environment.
 
-After completion you should see messages similar to:
+## Rerun behavior
 
+Provisioning is not a normal convergent configuration operation. The script uses the following guard:
+
+```text
+No sam.ldb -> back up host configuration -> provision once
+Existing sam.ldb + matching realm/domain/role -> skip successfully
+Existing sam.ldb + mismatch -> stop for investigation
 ```
-Server Role:           active directory domain controller
-Hostname:              dc1
-NetBIOS Domain:        TEST
-DNS Domain:            test.local
-DOMAIN SID:            S-1-5-21-... (unique to your domain)
-```
 
-## 3. Copy the Kerberos configuration
+It never deletes Samba databases or attempts a second provision over them. A failed partial provision needs investigation; do not remove `/var/lib/samba` merely to make the script pass.
 
-Samba generates a Kerberos config at `/var/lib/samba/private/krb5.conf` tailored to your realm.  Overwrite the system’s `/etc/krb5.conf` with this file:
+## Post-provision gate
+
+The AD service remains stopped until its DNS forwarder and host resolver are made consistent in the next stage.
 
 ```bash
-sudo cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf
+sudo testparm -s
+sudo testparm -s --parameter-name=realm
+sudo testparm -s --parameter-name=workgroup
+sudo testparm -s --parameter-name='server role'
+sudo systemctl is-active samba-ad-dc || true
 ```
 
-## 4. Enable the AD DC service
+Expected values are the configured realm, NetBIOS domain, and `active directory domain controller`. Continue with [DNS, Kerberos, and signed time](03-dns-kerberos.md).
 
-Start and enable the unified `samba-ad-dc` service.  This single daemon handles SMB, LDAP, Kerberos, DNS and more.
+## Failure boundary
 
-```bash
-sudo systemctl enable --now samba-ad-dc
-```
+If provisioning fails:
 
-Use `systemctl status samba-ad-dc --no-pager` to confirm it is running.  If it fails to start, consult the [Troubleshooting](troubleshooting.md) guide.
-
-## 5. Configure DNS resolution
-
-After provisioning, edit `/etc/resolv.conf` to point to the local Samba DNS and set a search domain.  For example:
-
-```bash
-sudo tee /etc/resolv.conf > /dev/null <<'EOF'
-nameserver 127.0.0.1
-search test.local
-EOF
-```
-
-The DNS server built into Samba can forward queries it cannot answer.  Configure a forwarder in `smb.conf` by adding the following under the `[global]` section:
-
-```ini
-[global]
-    # existing settings ...
-    dns forwarder = ${DNS_FORWARDER}
-```
-
-Restart the daemon to apply changes:
-
-```bash
-sudo systemctl restart samba-ad-dc
-```
-
-At this point the domain is provisioned and the AD DC is running.  Next, configure DNS/Kerberos verification and test your deployment.
+1. Save the command output in private troubleshooting notes without passwords.
+2. Do not rerun until checking `/etc/samba/smb.conf`, `/var/lib/samba/private/sam.ldb`, hostname resolution, free disk space, and logs.
+3. For a disposable first-build lab, rebuilding from the pre-lab VM checkpoint is safer than hand-deleting an unknown partial directory state.
+4. Use [Troubleshooting](troubleshooting.md) to diagnose the failure before deciding.

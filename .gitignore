@@ -1,1 +1,8 @@
 scripts/00-env
+*.log
+*.retry
+.DS_Store
+
+# Domain backups contain directory secrets and must never enter Git.
+backups/
+evidence/private/

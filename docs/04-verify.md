@@ -1,78 +1,93 @@
-## Verifying the AD DC
+# Verification and evidence
 
-After provisioning and starting services, verify that your domain controller is running correctly and can serve DNS and Kerberos requests.
+Verification is split into non-interactive health checks, credential-backed service checks, a Windows client path, negative tests, and recovery. A successful script run is not a substitute for the later layers.
 
-### Check service status
-
-Run the following command to ensure the Samba AD DC service is active:
+## Automated non-interactive checks
 
 ```bash
-sudo systemctl status samba-ad-dc --no-pager
+sudo bash scripts/50-verify.sh
 ```
 
-The output should show `active (running)`. If it's not, review logs with:
+The verifier returns non-zero if any required check fails. It checks:
+
+- `samba-ad-dc` and `chrony` service state;
+- Samba configuration parsing;
+- host and Samba DNS A-record resolution;
+- LDAP, Kerberos TCP/UDP, and password-change SRV records;
+- external DNS forwarding;
+- local domain information;
+- `samba-tool dbcheck --cross-ncs` in report-only mode;
+- SYSVOL ACL consistency through `samba-tool ntacl sysvolcheck`;
+- Chrony tracking and the signed-time socket.
+
+It does **not** use `|| true` to convert failures into a successful result. It also does not run `dbcheck --fix`; remediation needs a backup and operator review.
+
+## Credential-backed checks
+
+Run these interactively and keep credentials out of command arguments:
 
 ```bash
-sudo journalctl -xeu samba-ad-dc --no-pager | tail -n 80
-```
-
-### Confirm DNS is listening
-
-Samba’s internal DNS server must be listening on port 53. Verify this:
-
-```bash
-sudo ss -lpun | grep ':53'
-```
-
-You should see `samba` or `samba_dnsupdate` listening on `127.0.0.1:53`.
-
-### Test DNS SRV records
-
-LDAP and Kerberos rely on SRV records. Test them locally:
-
-```bash
-host -t SRV _ldap._tcp.test.local 127.0.0.1
-host -t SRV _kerberos._udp.test.local 127.0.0.1
-host -t SRV _kerberos._tcp.test.local 127.0.0.1
-```
-
-Each command should return the FQDN of your DC (e.g., `dc1.test.local`) and the correct service port (389 for LDAP, 88 for Kerberos). If not, run:
-
-```bash
-sudo samba_dnsupdate --verbose
-sudo systemctl restart samba-ad-dc
-```
-
-### Verify Kerberos authentication
-
-Attempt to obtain a Kerberos ticket for the `Administrator` account:
-
-```bash
-kinit Administrator@TEST.LOCAL
+kinit Administrator@AD.EXAMPLE.TEST
 klist
+smbclient //dc1.ad.example.test/netlogon -U Administrator -c ls
+smbclient //dc1.ad.example.test/sysvol -U Administrator -c ls
+kdestroy
 ```
 
-You should be prompted for the password and then see a valid Ticket Granting Ticket (TGT) when you run `klist`. If you see “Cannot find KDC for realm” or “Client not found”, check that `/etc/krb5.conf` is copied from `/var/lib/samba/private/krb5.conf`, that your DNS resolver points at `127.0.0.1`, and that the Kerberos SRV records exist.
+Passing means a Ticket Granting Ticket was issued and the automatically created domain shares were accessible with an authorized account.
 
-### List users and OUs
+## Windows client checks
 
-List the existing users and organisational units:
+Use a disposable Windows client on the same isolated LAN:
 
-```bash
-sudo samba-tool user list
-sudo samba-tool ou list
-```
+1. Set its only DNS server to `DC_IP`.
+2. Confirm `Resolve-DnsName` returns the DC A and AD SRV records.
+3. Confirm `w32tm /query /source` and `w32tm /query /status` report a healthy domain time path after join.
+4. Join the configured DNS domain with a delegated or lab Administrator account.
+5. Reboot and sign in as the optional `lab.user` account.
+6. Install RSAT, open Active Directory Users and Computers, and confirm the lab OUs.
+7. Create a harmless test GPO, link it to `Lab Workstations`, run `gpupdate /force`, and confirm the result with `gpresult /r`.
 
-You should see built‑in accounts (`Administrator`, `krbtgt`, `Guest`) and any you created (e.g., `yossef`).
+Do not describe Group Policy as tested until this path succeeds and the result is retained as sanitized evidence.
 
-### Test network shares
+## Negative tests
 
-Finally, verify that the SYSVOL and NETLOGON shares are available:
+Run only in the disposable lab and restore the expected state after each test.
 
-```bash
-smbclient -L dc1.test.local -U Administrator
-```
+| Test | Expected result |
+| --- | --- |
+| Point the client at a public DNS resolver | AD SRV discovery and join fail; restore client DNS to `DC_IP` |
+| Stop `chrony` temporarily | Time health check fails; restart Chrony before authentication drifts |
+| Stop `samba-ad-dc` temporarily | DNS and directory checks fail; restart and re-run the full verifier |
+| Supply a self-referential DNS forwarder in a copy of `00-env` | Configuration parser rejects it before host mutation |
+| Rerun provisioning against a matching domain | Script reports a safe skip |
+| Change the configured realm after provisioning | Script refuses the mismatch |
 
-This should list `netlogon` and `sysvol`. If share access fails, confirm that SMB port 445 is accessible and that your firewall is not blocking it.
+Do not inject database corruption, alter system time by large amounts, or expose services beyond the isolated subnet merely to create evidence.
 
-With these checks complete, your Samba AD DC should be ready for Windows computers to join and for you to create Group Policy Objects (GPOs) from a Windows RSAT console.
+## Evidence record
+
+Create a private evidence directory outside Git first. For any sanitized artifact intended for publication, record:
+
+- UTC timestamp;
+- repository commit SHA;
+- Ubuntu and Samba versions;
+- exact test command;
+- exit status;
+- whether the test was local, client-side, restore-host, or teardown;
+- redactions made.
+
+Never publish passwords, Kerberos tickets, keytabs, private backup archives, domain database files, public IP addresses, production names, employer data, or unrelated host details. Do not invent output. The [evidence template](evidence/README.md) lists the minimum artifacts for a defensible status update.
+
+## Remaining gates
+
+A complete runtime claim requires all of the following:
+
+- automated verifier passes;
+- Administrator Kerberos and share checks pass;
+- Windows DNS, join, login, and GPO path passes;
+- an online backup is produced and copied offline;
+- an isolated restore is started and retested;
+- the disposable environment is safely torn down or rebuilt.
+
+Continue with [Backup and recovery](05-backup-recovery.md).
