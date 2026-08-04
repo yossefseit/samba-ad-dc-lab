@@ -8,7 +8,7 @@ source "$(dirname -- "$0")/lib/common.sh"
 require_root
 require_ubuntu_2404
 require_command awk find install mktemp samba-tool sha256sum sort systemctl
-load_env
+load_env "${SAMBA_LAB_SCRIPTS_DIR}/00-env"
 
 systemctl is-active --quiet samba-ad-dc || die "samba-ad-dc must be active for an online backup."
 install -d -o root -g root -m 0700 "$BACKUP_DIR"

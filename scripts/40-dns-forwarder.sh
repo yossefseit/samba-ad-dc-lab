@@ -7,7 +7,7 @@ source "$(dirname -- "$0")/lib/common.sh"
 require_root
 require_ubuntu_2404
 require_command awk host install mktemp samba-tool systemctl testparm
-load_env
+load_env "${SAMBA_LAB_SCRIPTS_DIR}/00-env"
 
 [[ -e /var/lib/samba/private/sam.ldb ]] || die "No provisioned domain was found. Run 30-provision.sh first."
 assert_domain_config_matches

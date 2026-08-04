@@ -7,7 +7,7 @@ source "$(dirname -- "$0")/lib/common.sh"
 require_root
 require_ubuntu_2404
 require_command chronyc chronyd getent grep install mktemp stat systemctl
-load_env
+load_env "${SAMBA_LAB_SCRIPTS_DIR}/00-env"
 
 [[ -S /var/lib/samba/ntp_signd/socket ]] ||
   die "The Samba signed-time socket is missing. Start samba-ad-dc with 40-dns-forwarder.sh first."

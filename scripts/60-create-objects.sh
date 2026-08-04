@@ -7,7 +7,7 @@ source "$(dirname -- "$0")/lib/common.sh"
 require_root
 require_ubuntu_2404
 require_command awk grep install samba-tool systemctl
-load_env
+load_env "${SAMBA_LAB_SCRIPTS_DIR}/00-env"
 
 systemctl is-active --quiet samba-ad-dc || die "samba-ad-dc must be active before creating objects."
 base_dn="$(realm_to_base_dn "$REALM")"
