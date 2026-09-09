@@ -126,3 +126,7 @@ When ShellCheck is installed, the same entry point runs it automatically. CI ins
 ## License
 
 Released under the [MIT License](LICENSE). Samba and Ubuntu retain their own licenses and trademarks.
+
+---
+
+**Yossef Mohammed Ali** · [Portfolio](https://yossefseit.github.io/) · [Download CV](https://yossefseit.github.io/Yossef_Mohammed_Ali_CV.pdf)
